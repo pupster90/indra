@@ -43,7 +43,18 @@ class CxAssembler(object):
     cx : dict
         The structure of the CX network that is assembled.
     """
+   
     def __init__(self, stmts=None, network_name=None):
+        
+        def _add_context():
+            return {"pubmed": "http://identifiers.org/pubmed/",
+                    "cas": "http://identifiers.org/cas/",
+                    "chebi": "http://identifiers.org/chebi/CHEBI:",
+                    "hprd": "http://identifiers.org/hprd/",
+                    "uniprot knowledgebase": "http://identifiers.org/uniprot/",
+                    "KEGG Compound": "http://identifiers.org/kegg.compound/",
+                    "HGNC": "https://www.ebi.ac.uk/miriam/main/datatypes/MIR:00000080" }          
+        
         if stmts is None:
             self.statements = []
         else:
@@ -52,11 +63,11 @@ class CxAssembler(object):
             self.network_name = 'indra_assembled'
         else:
             self.network_name = network_name
-        self.cx = {'nodes': [], 'edges': [],
-                   'nodeAttributes': [], 'edgeAttributes': [],
-                   'citations': [], 'edgeCitations': [],
-                   'supports': [], 'edgeSupports': [],
-                   'networkAttributes': []}
+          
+        self.cx = {'@Context':[ _add_context() ],
+                   'nodes': [], 'edges': [],
+                   'nodeAttributes': [], 'edgeAttributes': [], 
+                   'networkAttributes': [] }
         self._existing_nodes = {}
         self._existing_edges = {}
         self._id_counter = 0
@@ -72,8 +83,8 @@ class CxAssembler(object):
         """
         for stmt in stmts:
             self.statements.append(stmt)
-
-    def make_model(self, add_indra_json=True):
+                        
+    def make_model(self, add_indra_json=True, version='1.0', description='An Indra Auto-Curated network'):
         """Assemble the CX network from the collected INDRA Statements.
 
         This method assembles a CX network from the set of INDRA Statements.
@@ -105,15 +116,17 @@ class CxAssembler(object):
                 self._add_gef(stmt)
             elif isinstance(stmt, Gap):
                 self._add_gap(stmt)
-        network_description = ''
         self.cx['networkAttributes'].append({'n': 'name',
                                              'v': self.network_name})
         self.cx['networkAttributes'].append({'n': 'description',
-                                             'v': network_description})
+                                             'v': description})
+        self.cx['networkAttributes'].append({'n': 'version',
+                                             'v': version})
         cx_str = self.print_cx()
         return cx_str
 
     def print_cx(self, pretty=True):
+        #print("indside print")
         """Return the assembled CX network as a json string.
 
         Parameters
@@ -136,18 +149,18 @@ class CxAssembler(object):
                     'consistencyGroup': 1,
                     'elementCount': count}
             return data
+        
         full_cx = OrderedDict()
         full_cx['numberVerification'] = [{'longNumber': 281474976710655}]
-        aspects = ['nodes', 'edges', 'supports', 'citations', 'edgeAttributes',
-                   'edgeCitations', 'edgeSupports', 'networkAttributes',
-                   'nodeAttributes']
+        aspects = ['@Context','networkAttributes','nodes', 'edges','nodeAttributes','edgeAttributes']
         full_cx['metaData'] = []
         for aspect in aspects:
             metadata = _get_aspect_metadata(aspect)
             if metadata:
                 full_cx['metaData'].append(metadata)
-        for k, v in self.cx.items():
-            full_cx[k] = v
+        for aspect in  aspects:
+            #print(k)
+            full_cx[aspect] = self.cx[aspect]
         full_cx['status'] = [{'error': '', 'success': True}]
         full_cx = [{k: v} for k, v in full_cx.items()]
         if pretty:
@@ -253,6 +266,7 @@ class CxAssembler(object):
         self._id_counter += 1
         return ret
 
+
     def _add_modification(self, stmt):
         if stmt.enz is None:
             return
@@ -271,7 +285,7 @@ class CxAssembler(object):
             m1_id = self._add_node(m1)
             m2_id = self._add_node(m2)
             self._add_edge(m1_id, m2_id, 'Complex', stmt)
-
+            
     def _add_regulation(self, stmt):
         if stmt.subj is None:
             return
@@ -300,7 +314,8 @@ class CxAssembler(object):
         node_id = self._get_new_id()
         self._existing_nodes[node_key] = node_id
         node = {'@id': node_id,
-                'n': agent.name}
+                'n': agent.name,
+                'r': agent.name}       # print(node) #<-- debugging
         self.cx['nodes'].append(node)
         self._add_node_metadata(node_id, agent)
         return node_id
@@ -311,6 +326,10 @@ class CxAssembler(object):
                           'n': 'type',
                           'v': agent_type}
         self.cx['nodeAttributes'].append(node_attribute)
+        
+        ### Code I modified ###   
+        # This code add's the alias'es for a node (if they exist)
+        alias = []
         for db_name, db_ids in agent.db_refs.items():
             if not db_ids:
                 logger.warning('Missing db_id for %s' % agent)
@@ -325,16 +344,19 @@ class CxAssembler(object):
             if not url:
                 continue
             db_name_map = {
-                'UP': 'UniProt', 'PUBCHEM': 'PubChem',
+                'UP': 'uniprot knowledgebase',
+                'PUBCHEM': 'PubChem',
                 'IP': 'InterPro', 'NXPFA': 'NextProtFamily',
                 'PF': 'Pfam', 'CHEBI': 'ChEBI'}
             name = db_name_map.get(db_name)
             if not name:
                 name = db_name
-
+            alias.append( name+":"+db_id ) 
+            
+        if len(alias) > 0:
             node_attribute = {'po': node_id,
-                              'n': name,
-                              'v': url}
+                              'n': "alias",
+                              'v': str(alias) }
             self.cx['nodeAttributes'].append(node_attribute)
 
     def _add_edge(self, source, target, interaction, stmt):
@@ -363,12 +385,12 @@ class CxAssembler(object):
         self.cx['edgeAttributes'].append(edge_attribute)
 
         # Add INDRA JSON
-        if self.add_indra_json:
-            indra_stmt_json = json.dumps(stmt.to_json())
-            edge_attribute = {'po': edge_id,
-                              'n': 'INDRA json',
-                              'v': indra_stmt_json}
-            self.cx['edgeAttributes'].append(edge_attribute)
+        #if self.add_indra_json:
+        #    indra_stmt_json = json.dumps(stmt.to_json())
+        #    edge_attribute = {'po': edge_id,
+        #                      'n': 'INDRA json',
+        #                      'v': indra_stmt_json}
+        #    self.cx['edgeAttributes'].append(edge_attribute)
 
         # Add the type of statement as the edge type
         stmt_type, stmt_polarity = _get_stmt_type(stmt)
@@ -380,10 +402,10 @@ class CxAssembler(object):
                           'n': 'polarity',
                           'v': stmt_polarity}
         self.cx['edgeAttributes'].append(edge_attribute)
-
+        
+        ### Code I Changed ###  
         # Add the citations for the edge
         pmids = [e.pmid for e in stmt.evidence if e.pmid]
-        edge_citations = []
         pmids_added = []
         for pmid in pmids:
             pmid_txt = None
@@ -391,15 +413,11 @@ class CxAssembler(object):
                 pmid_txt = 'pmid:' + pmid
                 if pmid_txt not in pmids_added:
                     citation_id = self._get_new_id()
-                    citation = {'@id': citation_id,
-                                'dc:identifier': pmid_txt}
-                    self.cx['citations'].append(citation)
-                    edge_citations.append(citation_id)
-                    pmids_added.append(pmid_txt)
-        if edge_citations:
-            edge_citation = {'citations': edge_citations,
-                             'po': [edge_id]}
-            self.cx['edgeCitations'].append(edge_citation)
+                    citation = {'po': citation_id,  #<-- removed "citations" aspect, put code in "nodeAttributes"
+                                'n':'citations',
+                                'v': pmid_txt}
+                    self.cx['edgeAttributes'].append(citation)
+        
 
         # Add the textual supports for the edge
         texts = [e.text for e in stmt.evidence if e.text]
@@ -407,35 +425,38 @@ class CxAssembler(object):
         for text in texts:
             text = text.replace('XREF_BIBR', '')
             support_id = self._get_new_id()
-            support = {'@id': support_id,
-                       'text': text}
-            self.cx['supports'].append(support)
+            support = { "n": "support", 
+                        "v": text,
+                        "po": support_id }
+            self.cx['nodeAttributes'].append(support)
             edge_supports.append(support_id)
         if edge_supports:
-            edge_support = {'supports': edge_supports,
-                            'po': [edge_id]}
-            self.cx['edgeSupports'].append(edge_support)
+            edge_support = {'po': edge_id ,
+                            'n': "supports",
+                            'v': edge_supports}
+            self.cx['edgeAttributes'].append(edge_support)
 
         belief_str = '%.2f' % stmt.belief
-        edge_attribute = {'po': edge_id,
+        edge_attribute = {'po': edge_id, 
                           'n': 'Belief score',
-                          'v': belief_str}
+                          'v': belief_str }
         self.cx['edgeAttributes'].append(edge_attribute)
 
         # NOTE: supports and edgeSupports are currently
         # not shown on NDEx therefore we add text evidence as a generic
         # edgeAttribute
-        if texts:
-            text = texts[0]
-            edge_attribute = {'po': edge_id,
-                              'n': 'Text',
-                              'v': text}
-            self.cx['edgeAttributes'].append(edge_attribute)
+        #if texts:
+        #    text = texts[0]
+        #    edge_attribute = {'po': edge_id,
+        #                      'n': 'Text',
+        #                      'v': text}
+        #    self.cx['edgeAttributes'].append(edge_attribute)
 
         # Add the serialized JSON INDRA Statement
-        stmt_dict = stmt.to_json()
-        edge_attribute = {'po': edge_id, 'n': 'indra', 'v': stmt_dict}
-        self.cx['edgeAttributes'].append(edge_attribute)
+        if self.add_indra_json:
+            stmt_dict = stmt.to_json()
+            edge_attribute = {'po': edge_id, 'n': 'indra', 'v': stmt_dict}
+            self.cx['edgeAttributes'].append(edge_attribute)
 
         # Add support type
         support_type = _get_support_type(stmt)
